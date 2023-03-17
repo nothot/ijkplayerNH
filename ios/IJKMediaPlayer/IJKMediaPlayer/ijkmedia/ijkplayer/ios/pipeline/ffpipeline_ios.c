@@ -35,16 +35,25 @@ static void func_destroy(IJKFF_Pipeline *pipeline)
 {
 }
 
+/**
+ 打开视频解码器
+ */
 static IJKFF_Pipenode *func_open_video_decoder(IJKFF_Pipeline *pipeline, FFPlayer *ffp)
 {
     IJKFF_Pipenode* node = NULL;
     IJKFF_Pipeline_Opaque *opaque = pipeline->opaque;
+    /**
+     如果设置了使用硬解码，优先尝试初始化硬解码器
+     */
     if (ffp->videotoolbox) {
         node = ffpipenode_create_video_decoder_from_ios_videotoolbox(ffp);
         if (!node)
             ALOGE("vtb fail!!! switch to ffmpeg decode!!!! \n");
     }
     if (node == NULL) {
+        /**
+         ffmpeg 软解码器
+         */
         node = ffpipenode_create_video_decoder_from_ffplay(ffp);
         ffp->stat.vdec_type = FFP_PROPV_DECODER_AVCODEC;
         opaque->is_videotoolbox_open = false;

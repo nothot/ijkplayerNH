@@ -202,6 +202,10 @@ void IJKFFIOStatCompleteRegister(void (*cb)(const char *url,
         _urlString = aUrlString;
 
         // init player
+        /*
+         创建播放器
+         media_player_msg_loop 传入消息处理函数，后续处理消息事件
+         */
         _mediaPlayer = ijkmp_ios_create(media_player_msg_loop);
         _msgPool = [[IJKFFMoviePlayerMessagePool alloc] init];
         IJKWeakHolder *weakHolder = [IJKWeakHolder new];

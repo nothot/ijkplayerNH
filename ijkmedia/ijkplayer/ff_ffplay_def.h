@@ -160,11 +160,11 @@ typedef struct GetImgInfo {
 typedef struct MyAVPacketList {
     AVPacket pkt;
     struct MyAVPacketList *next;
-    int serial;
+    int serial;// 序列号，用于判定是否需要flush，在packet queue中，相邻若干节点的序列号是相同的，序列号不同视为需要flush
 } MyAVPacketList;
 
 typedef struct PacketQueue {
-    MyAVPacketList *first_pkt, *last_pkt;
+    MyAVPacketList *first_pkt, *last_pkt;// 首节点和尾结点
     int nb_packets;
     int size;
     int64_t duration;
@@ -231,17 +231,24 @@ typedef struct Frame {
 
 typedef struct FrameQueue {
     Frame queue[FRAME_QUEUE_SIZE];
-    int rindex;
-    int windex;
-    int size;
-    int max_size;
-    int keep_last;
-    int rindex_shown;
+    int rindex;// 指向当前队里里已读的最后一个节点
+    int windex;// 当前队列里第一个可写的帧节点索引，通过该索引可获取帧节点并赋值
+    int size;// 当前已经写入的节点个数
+    int max_size;// 最大允许存储的节点个数
+    int keep_last;// 是否要保留最后一个读节点
+    int rindex_shown;// 当前节点是否已经展示，该字段为布尔值，取值只有0和1
     SDL_mutex *mutex;
     SDL_cond *cond;
-    PacketQueue *pktq;
+    PacketQueue *pktq;// 关联的pkt queue
 } FrameQueue;
 
+/**
+ 时钟同步的方式三种：
+ AV_SYNC_AUDIO_MASTER 参考音频时钟，即视频会向音频同步，播放过快则重复上一帧，播放过慢则丢帧追赶音频
+ AV_SYNC_VIDEO_MASTER 参考视频时钟，即音频会向视频同步
+ AV_SYNC_EXTERNAL_CLOCK 参考外部时钟，即视音频会向外部时钟同步
+ 由于人对声音的敏感度是高于画面的，因此默认的同步方式是参考音频时钟
+ */
 enum {
     AV_SYNC_AUDIO_MASTER, /* default choice */
     AV_SYNC_VIDEO_MASTER,
@@ -253,8 +260,8 @@ typedef struct Decoder {
     AVPacket pkt_temp;
     PacketQueue *queue;
     AVCodecContext *avctx;
-    int pkt_serial;
-    int finished;
+    int pkt_serial; // 当前要解码的pkt序列号
+    int finished;   // 已经解码完成的pkt序列号
     int packet_pending;
     int bfsc_ret;
     uint8_t *bfsc_data;
@@ -358,7 +365,7 @@ typedef struct VideoState {
     AVStream *subtitle_st;
     PacketQueue subtitleq;
 
-    double frame_timer;
+    double frame_timer; // 当前正在展示的帧的播放时刻（系统时间）
     double frame_last_returned_time;
     double frame_last_filter_delay;
     int video_stream;

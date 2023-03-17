@@ -35,14 +35,23 @@
 
 IjkMediaPlayer *ijkmp_ios_create(int (*msg_loop)(void*))
 {
+    /**
+     创建player结构体
+     */
     IjkMediaPlayer *mp = ijkmp_create(msg_loop);
     if (!mp)
         goto fail;
 
+    /**
+     创建图像渲染对象
+     */
     mp->ffplayer->vout = SDL_VoutIos_CreateForGLES2();
     if (!mp->ffplayer->vout)
         goto fail;
 
+    /**
+     创建pipeline对象，包含视频解码和音频输出等函数注册
+     */
     mp->ffplayer->pipeline = ffpipeline_create_from_ios(mp->ffplayer);
     if (!mp->ffplayer->pipeline)
         goto fail;

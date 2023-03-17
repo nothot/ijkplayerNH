@@ -120,6 +120,7 @@ typedef NS_ENUM(NSInteger, IJKSDLGLViewApplicationState) {
     glGenRenderbuffers(1, &_renderbuffer);
     glBindFramebuffer(GL_FRAMEBUFFER, _framebuffer);
     glBindRenderbuffer(GL_RENDERBUFFER, _renderbuffer);
+    // 将可绘制对象的存储绑定到render buffer
     [_context renderbufferStorage:GL_RENDERBUFFER fromDrawable:(CAEAGLLayer*)self.layer];
     glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_WIDTH, &_backingWidth);
     glGetRenderbufferParameteriv(GL_RENDERBUFFER, GL_RENDERBUFFER_HEIGHT, &_backingHeight);
@@ -149,20 +150,20 @@ typedef NS_ENUM(NSInteger, IJKSDLGLViewApplicationState) {
 {
     if (_didSetupGL)
         return YES;
-
+    // 用于展示OpenGL绘制的图像
     CAEAGLLayer *eaglLayer = (CAEAGLLayer*) self.layer;
     eaglLayer.opaque = YES;
     eaglLayer.drawableProperties = [NSDictionary dictionaryWithObjectsAndKeys:
                                     [NSNumber numberWithBool:NO], kEAGLDrawablePropertyRetainedBacking,
                                     kEAGLColorFormatRGBA8, kEAGLDrawablePropertyColorFormat,
                                     nil];
-
+    // 设置scale，将layer的大小设置为跟屏幕大小一致
     _scaleFactor = [[UIScreen mainScreen] scale];
     if (_scaleFactor < 0.1f)
         _scaleFactor = 1.0f;
 
     [eaglLayer setContentsScale:_scaleFactor];
-
+    // 创建上下文，用于保存OpenGL ES中的状态
     _context = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES2];
     if (_context == nil) {
         NSLog(@"failed to setup EAGLContext\n");

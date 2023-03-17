@@ -74,7 +74,7 @@ typedef struct VTBFormatDesc
     bool                        convert_bytestream;
     bool                        convert_3byteTo4byteNALSize;
 } VTBFormatDesc;
-
+/// 硬解码上下文
 struct Ijk_VideoToolBox_Opaque {
     FFPlayer                   *ffp;
     volatile bool               refresh_request;
@@ -303,7 +303,7 @@ static bool GetVTBPicture(Ijk_VideoToolBox_Opaque* context, AVFrame* pVTBPicture
         return false;
     }
     pthread_mutex_lock(&context->m_queue_mutex);
-
+    // 取链表首个节点帧
     volatile sort_queue *sort_queue = context->m_sort_queue;
     *pVTBPicture        = sort_queue->pic;
     pVTBPicture->opaque = CVBufferRetain(sort_queue->pic.opaque);
@@ -315,6 +315,9 @@ static bool GetVTBPicture(Ijk_VideoToolBox_Opaque* context, AVFrame* pVTBPicture
 
 static void QueuePicture(Ijk_VideoToolBox_Opaque* ctx) {
     AVFrame picture = {0};
+    /**
+     从解码帧链表中取出首个节点帧，入队解码后队列picQueue
+     */
     if (true == GetVTBPicture(ctx, &picture)) {
         AVRational tb = ctx->ffp->is->video_st->time_base;
         AVRational frame_rate = av_guess_frame_rate(ctx->ffp->is->ic, ctx->ffp->is->video_st, NULL);
@@ -334,6 +337,7 @@ static void QueuePicture(Ijk_VideoToolBox_Opaque* ctx) {
 }
 
 
+/// 解码回调
 static void VTDecoderCallback(void *decompressionOutputRefCon,
                        void *sourceFrameRefCon,
                        OSStatus status,
@@ -349,6 +353,7 @@ static void VTDecoderCallback(void *decompressionOutputRefCon,
 
         FFPlayer   *ffp         = ctx->ffp;
         VideoState *is          = ffp->is;
+        // 创建存储解码后帧的节点，解码帧是以链表形式存储的，每个节点存储一帧，并记录该帧pts，方便节点排序
         sort_queue *newFrame    = NULL;
 
         sample_info *sample_info = sourceFrameRefCon;
@@ -465,12 +470,16 @@ static void VTDecoderCallback(void *decompressionOutputRefCon,
 
 
         newFrame->pic.opaque = CVBufferRetain(imageBuffer);
+        // 将节点newFrame插入链表
         pthread_mutex_lock(&ctx->m_queue_mutex);
+        // 取首节点
         volatile sort_queue *queueWalker = ctx->m_sort_queue;
+        // 如果首节点为空，或者新节点pts小于首节点，新节点置为首节点
         if (!queueWalker || (newFrame->sort < queueWalker->sort)) {
             newFrame->nextframe = queueWalker;
             ctx->m_sort_queue = newFrame;
         } else {
+            // 沿链表遍历，根据pts找到新节点要插入的位置并插入
             bool frameInserted = false;
             volatile sort_queue *nextFrame = NULL;
             while (!frameInserted) {
@@ -483,12 +492,14 @@ static void VTDecoderCallback(void *decompressionOutputRefCon,
                 queueWalker = nextFrame;
             }
         }
+        // 插入完成，深度+1
         ctx->m_queue_depth++;
         pthread_mutex_unlock(&ctx->m_queue_mutex);
 
         //ALOGI("%lf %lf %lf \n", newFrame->sort,newFrame->pts, newFrame->dts);
         //ALOGI("display queue deep %d\n", ctx->m_queue_depth);
 
+        // 如果需要终止，释放链表
         if (ctx->ffp->is == NULL || ctx->ffp->is->abort_request || ctx->ffp->is->viddec.queue->abort_request) {
             while (ctx->m_queue_depth > 0) {
                 SortQueuePop(ctx);
@@ -497,6 +508,7 @@ static void VTDecoderCallback(void *decompressionOutputRefCon,
         }
         //ALOGI("depth %d  %d\n", ctx->m_queue_depth, ctx->m_max_ref_frames);
         if ((ctx->m_queue_depth > ctx->fmt_desc.max_ref_frames)) {
+            // 队列深度大于解码上下文最大引用帧数，入队新节点
             QueuePicture(ctx);
         }
     successed:
@@ -692,6 +704,7 @@ static int decode_video_internal(Ijk_VideoToolBox_Opaque* context, AVCodecContex
     sample_info->sar_den = avctx->sample_aspect_ratio.den;
     sample_info_push(context);
 
+    // 解码视频帧，解码回调在vtbsession_create创建解码session时有设置
     status = VTDecompressionSessionDecodeFrame(context->vt_session, sample_buff, decoder_flags, (void*)sample_info, 0);
     if (status == noErr) {
         if (context->ffp->is->videoq.abort_request)
@@ -708,6 +721,11 @@ static int decode_video_internal(Ijk_VideoToolBox_Opaque* context, AVCodecContex
 
         ALOGE("decodeFrame %d %s\n", (int)status, vtb_get_error_string(status));
 
+        /**
+         VideoToolBox硬件解码H264流的过程中，如果App从前台按Home键进入后台，会立马产生一个kVTInvalidSessionErr的错误
+         如果这个时候重置解码器，继续解码，会遇到kVTVideoDecoderMalfunctionErr的错误
+         当继续遇到I帧以后，后续的解码将会正常，也就意味着，解码器在后台可以工作
+         */
         if (status == kVTInvalidSessionErr) {
             context->refresh_session = true;
         }
@@ -770,18 +788,23 @@ static int decode_video(Ijk_VideoToolBox_Opaque* context, AVCodecContext *avctx,
         return 0;
     }
 
+    // 如果打开了视频分辨率处理开关，且视频是h264编码
     if (context->ffp->vtb_handle_resolution_change &&
         context->codecpar->codec_id == AV_CODEC_ID_H264) {
+        // 从pkt中获取side_data信息
         size_data = av_packet_get_side_data(avpkt, AV_PKT_DATA_NEW_EXTRADATA, &size_data_size);
         // minimum avcC(sps,pps) = 7
+        // 包含sps和pps的side_data（即avc sequence header）长度至少要有7个字节
         if (size_data && size_data_size > 7) {
             int             got_picture = 0;
             AVFrame        *frame      = av_frame_alloc();
             AVDictionary   *codec_opts = NULL;
+            // 创建新的codec context
             AVCodecContext *new_avctx  = avcodec_alloc_context3(avctx->codec);
             if (!new_avctx)
                 return AVERROR(ENOMEM);
-
+            
+            // 从当前context保存的解码参数集codecpar中拷贝数据到新创建的codec context
             avcodec_parameters_to_context(new_avctx, context->codecpar);
             av_freep(&new_avctx->extradata);
             new_avctx->extradata = av_mallocz(size_data_size + AV_INPUT_BUFFER_PADDING_SIZE);
@@ -791,6 +814,7 @@ static int decode_video(Ijk_VideoToolBox_Opaque* context, AVCodecContext *avctx,
             new_avctx->extradata_size = size_data_size;
 
             av_dict_set(&codec_opts, "threads", "1", 0);
+            // 使用旧codec context的解码器初始化新的codec context
             ret = avcodec_open2(new_avctx, avctx->codec, &codec_opts);
             av_dict_free(&codec_opts);
             if (ret < 0) {
@@ -798,11 +822,13 @@ static int decode_video(Ijk_VideoToolBox_Opaque* context, AVCodecContext *avctx,
                 return ret;
             }
 
+            // 解码一帧视频，然后新的codec context将记录视频的宽高等信息
             ret = avcodec_decode_video2(new_avctx, frame, &got_picture, avpkt);
             if (ret < 0) {
                 avcodec_free_context(&new_avctx);
                 return ret;
             } else {
+                // 如果解出的宽高和当前context记录的宽高不等，说明分辨率发生变化，更新当前context的解码参数集
                 if (context->codecpar->width  != new_avctx->width &&
                     context->codecpar->height != new_avctx->height) {
                     avcodec_parameters_from_context(context->codecpar, new_avctx);
@@ -828,10 +854,12 @@ static int decode_video(Ijk_VideoToolBox_Opaque* context, AVCodecContext *avctx,
 
     DuplicatePkt(context, avpkt);
 
+    // 在遇到某些解码错误时，可以通过重置解码session来恢复解码，refresh_session表示需要重置解码器
     if (context->refresh_session) {
         ret = 0;
 
         sample_info_flush(context, 1000);
+        // 销毁硬解码器并重新创建新的硬解码器
         vtbsession_destroy(context);
         memset(context->sample_info_array, 0, sizeof(context->sample_info_array));
         context->sample_infos_in_decoding = 0;
@@ -960,6 +988,7 @@ void videotoolbox_async_free(Ijk_VideoToolBox_Opaque* context)
     avcodec_parameters_free(&context->codecpar);
 }
 
+#pragma mark - 硬解码入口
 int videotoolbox_async_decode_frame(Ijk_VideoToolBox_Opaque* context)
 {
     FFPlayer *ffp = context->ffp;
@@ -971,16 +1000,18 @@ int videotoolbox_async_decode_frame(Ijk_VideoToolBox_Opaque* context)
         if (is->abort_request || d->queue->abort_request) {
             return -1;
         }
-
+        // 没有正在解码pkt或者序列号变更需要flush
         if (!d->packet_pending || d->queue->serial != d->pkt_serial) {
             AVPacket pkt;
             do {
                 if (d->queue->nb_packets == 0)
                     SDL_CondSignal(d->empty_queue_cond);
                 ffp_video_statistic_l(ffp);
+                // 获取一个pkt
                 if (ffp_packet_queue_get_or_buffering(ffp, d->queue, &pkt, &d->pkt_serial, &d->finished) < 0)
                     return -1;
                 if (ffp_is_flush_packet(&pkt)) {
+                    // 清空解码器内部缓存的帧数据，通常遇到I帧时再清空
                     avcodec_flush_buffers(d->avctx);
                     context->refresh_request = true;
                     context->serial += 1;
@@ -991,6 +1022,7 @@ int videotoolbox_async_decode_frame(Ijk_VideoToolBox_Opaque* context)
                 }
             } while (ffp_is_flush_packet(&pkt) || d->queue->serial != d->pkt_serial);
 
+            // 将side data从pkt中分离
             av_packet_split_side_data(&pkt);
 
             av_packet_unref(&d->pkt);
